@@ -3953,6 +3953,21 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 						}
 					}
 
+					while(tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE &&
+						  tokenizer->get_token_type() == Variant::DICTIONARY &&
+						  tokenizer->get_token(1) == GDScriptTokenizer::TK_COMMA) {
+
+						tokenizer->advance(); // Dictionary
+						tokenizer->advance(); // Comma
+
+						tokenizer->advance(); // Key type hint
+						GDScriptTokenizer::Token typeTokenA = tokenizer->get_token();
+						tokenizer->advance(); // Comma again
+
+						tokenizer->advance(); // Value type hint
+						GDScriptTokenizer::Token typeTokenB = tokenizer->get_token();
+					}
+
 					if (tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE) {
 
 						Variant::Type type = tokenizer->get_token_type();
