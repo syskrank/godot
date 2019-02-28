@@ -33,6 +33,7 @@
 #include "core/core_string_names.h"
 #include "core/engine.h"
 #include "core/io/resource_loader.h"
+#include "core/os/os.h"
 #include "core/os/file_access.h"
 #include "core/print_string.h"
 #include "core/project_settings.h"
@@ -3957,6 +3958,9 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 						  tokenizer->get_token_type() == Variant::DICTIONARY &&
 						  tokenizer->get_token(1) == GDScriptTokenizer::TK_COMMA) {
 
+                        print_line("Parsing dictionary.\n");
+//                        OS::get_singleton()->print("Cur. token: %s\n", tokenizer->);
+
 						tokenizer->advance(); // Dictionary
 						tokenizer->advance(); // Comma
 
@@ -4433,6 +4437,8 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 						current_export.hint_string = hint_prefix + ":" + current_export.hint_string;
 						current_export.hint = PROPERTY_HINT_TYPE_STRING;
 						current_export.type = Variant::ARRAY;
+
+                        OS::get_singleton()->print("Current export hint: %s\n", current_export.hint_string.utf8().get_data());
 					}
 
 					tokenizer->advance();
