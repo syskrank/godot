@@ -3941,6 +3941,7 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 
 					String hint_prefix = "";
 					bool is_arrayed = false;
+					bool is_dictionary = false;
 
 					while (tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE &&
 							tokenizer->get_token_type() == Variant::ARRAY &&
@@ -3958,18 +3959,15 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 						  tokenizer->get_token_type() == Variant::DICTIONARY &&
 						  tokenizer->get_token(1) == GDScriptTokenizer::TK_COMMA) {
 
-                        print_line("Parsing dictionary.\n");
 //                        OS::get_singleton()->print("Cur. token: %s\n", tokenizer->);
 
 						tokenizer->advance(); // Dictionary
 						tokenizer->advance(); // Comma
-
-						tokenizer->advance(); // Key type hint
-						GDScriptTokenizer::Token typeTokenA = tokenizer->get_token();
-						tokenizer->advance(); // Comma again
-
-						tokenizer->advance(); // Value type hint
-						GDScriptTokenizer::Token typeTokenB = tokenizer->get_token();
+						if (is_dictionary){
+							hint_prefix += itos(Variant::DICTIONARY) + ":";
+						} else {
+							is_dictionary = true;
+						}
 					}
 
 					if (tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE) {
@@ -4437,8 +4435,16 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 						current_export.hint_string = hint_prefix + ":" + current_export.hint_string;
 						current_export.hint = PROPERTY_HINT_TYPE_STRING;
 						current_export.type = Variant::ARRAY;
+					}
 
-                        OS::get_singleton()->print("Current export hint: %s\n", current_export.hint_string.utf8().get_data());
+					if(is_dictionary) {
+						hint_prefix += itos(current_export.type);
+						if (current_export.hint) {
+							hint_prefix += "/" + itos(current_export.hint);
+						}
+						current_export.hint_string = hint_prefix + ":" + current_export.hint_string;
+						current_export.hint = PROPERTY_HINT_TYPE_STRING;
+						current_export.type = Variant::DICTIONARY;
 					}
 
 					tokenizer->advance();
