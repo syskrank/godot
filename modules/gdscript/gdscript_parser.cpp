@@ -33,8 +33,8 @@
 #include "core/core_string_names.h"
 #include "core/engine.h"
 #include "core/io/resource_loader.h"
-#include "core/os/os.h"
 #include "core/os/file_access.h"
+#include "core/os/os.h"
 #include "core/print_string.h"
 #include "core/project_settings.h"
 #include "core/reference.h"
@@ -3941,8 +3941,8 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 					tokenizer->advance(); // go past '(' symbol
 
 					String hint_prefix = ""; // this is used to form the scene editor export helper string
-					bool is_arrayed = false; // parsing exported Array with hints
-					bool is_dictionary = false; // parsing exported Dictionary with hints
+					bool is_hinted_array = false; // parsing exported Array with hints
+					bool is_hinted_dict = false; // parsing exported Dictionary with hints
 
 					// This will run until the construct 'Array, ' is there: export(Array, Array, Array, ... )
 					// Seems to handle the nested Arrays case
@@ -3951,482 +3951,486 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 							tokenizer->get_token(1) == GDScriptTokenizer::TK_COMMA) {
 						tokenizer->advance(); // Go past 'Array' identifier
 						tokenizer->advance(); // Go past ',' symbol
-						if (is_arrayed) {
+						if (is_hinted_array) {
 							hint_prefix += itos(Variant::ARRAY) + ":"; // 19: (i.e. Array of: Array of: int)
 						} else {
-							is_arrayed = true; // toggled in case of 'export(Array, HINT...)' construction
+							is_hinted_array = true; // toggled in case of 'export(Array, HINT...)' construction
 						}
 					}
 
-					// Handling export of a dictionary with hints
-					/*while(tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE &&
-						  tokenizer->get_token_type() == Variant::DICTIONARY &&
-						  tokenizer->get_token(1) == GDScriptTokenizer::TK_COMMA) {
+					// Detect & start processing a Dictionary with hints
+					if (tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE &&
+							tokenizer->get_token_type() == Variant::DICTIONARY &&
+							tokenizer->get_token(1) == GDScriptTokenizer::TK_COMMA) {
+						tokenizer->advance(); // Go past 'Dictionary' identifier
+						tokenizer->advance(); // Go past ',' symbol
 
-//                        OS::get_singleton()->print("Cur. token: %s\n", tokenizer->);
-
-						tokenizer->advance(); // Dictionary
-						tokenizer->advance(); // Comma
-						if (is_dictionary){
-							hint_prefix += itos(Variant::DICTIONARY) + ":";
-						} else {
-							is_dictionary = true;
-						}
-					}*/
+						// We do not process nested Dictionaries
+						is_hinted_dict = true;
+					}
 
 					// General export type specification & special cases for Array or Dictionary hints.
 					// On this stage, the tokenizer will be either past the first hint comma or past the '(' symbol.
 					// In any case, current position should hold some type name.
-					if (tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE) {
 
-						Variant::Type type = tokenizer->get_token_type(); // The type of exported variable. For Arrays and Dictionaries with hints this is overriden below
-						if (type == Variant::NIL) {
-							_set_error("Can't export null type.");
-							return;
-						}
-						if (type == Variant::OBJECT) {
-							_set_error("Can't export raw object type.");
-							return;
-						}
-						current_export.type = type; // The pure hint type ( without Array or Dictionary involved
-						current_export.usage |= PROPERTY_USAGE_SCRIPT_VARIABLE;
-						tokenizer->advance(); // go past type name, typically this will be a ')' symbol.
+					// Repeat this two times for Dictionary? ( for key and value )
+					int repeats = 1;
+					if (is_hinted_dict)
+						repeats = 2;
 
-						// Export hints are processed here - after getting a ',' symbol after the type name
-						if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA) {
-							tokenizer->advance(); // next token after comma
+					// Collect generic export tokens and/or export hints
+					for (int i = 0; i < repeats; i++ ) { // cycle is needed to repeat the process in case of a dictionary
+						if (tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE) {
 
-							switch (type) {
+							Variant::Type type = tokenizer->get_token_type(); // The type of exported variable. For Arrays and Dictionaries with hints this is overriden below
+							if (type == Variant::NIL) {
+								_set_error("Can't export null type.");
+								return;
+							}
+							if (type == Variant::OBJECT) {
+								_set_error("Can't export raw object type.");
+								return;
+							}
+							current_export.type = type; // The pure hint type ( without Array or Dictionary involved
+							current_export.usage |= PROPERTY_USAGE_SCRIPT_VARIABLE;
+							tokenizer->advance(); // go past type name, typically this will be a ')' symbol.
 
-								case Variant::INT: {
+							// Export hints are processed here - after getting a ',' symbol after the type name
+							if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA) {
+								tokenizer->advance(); // next token after comma
 
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "FLAGS") {
+								switch (type) {
 
+									case Variant::INT: {
+
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "FLAGS") {
+
+											tokenizer->advance();
+
+											if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
+												ERR_EXPLAIN("Exporting bit flags hint requires string constants.");
+												WARN_DEPRECATED
+												break;
+											}
+											if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
+												_set_error("Expected ',' in bit flags hint.");
+												return;
+											}
+
+											current_export.hint = PROPERTY_HINT_FLAGS;
+											tokenizer->advance();
+
+											bool first = true;
+											while (true) {
+
+												if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || tokenizer->get_token_constant().get_type() != Variant::STRING) {
+													current_export = PropertyInfo();
+													_set_error("Expected a string constant in named bit flags hint.");
+													return;
+												}
+
+												String c = tokenizer->get_token_constant();
+												if (!first)
+													current_export.hint_string += ",";
+												else
+													first = false;
+
+												current_export.hint_string += c.xml_escape();
+
+												tokenizer->advance();
+												if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
+													break;
+
+												if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
+													current_export = PropertyInfo();
+													_set_error("Expected ')' or ',' in named bit flags hint.");
+													return;
+												}
+												tokenizer->advance();
+											}
+
+											break;
+										}
+
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_CONSTANT && tokenizer->get_token_constant().get_type() == Variant::STRING) {
+											//enumeration
+											current_export.hint = PROPERTY_HINT_ENUM;
+											bool first = true;
+											while (true) {
+
+												if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || tokenizer->get_token_constant().get_type() != Variant::STRING) {
+
+													current_export = PropertyInfo();
+													_set_error("Expected a string constant in enumeration hint.");
+													return;
+												}
+
+												String c = tokenizer->get_token_constant();
+												if (!first)
+													current_export.hint_string += ",";
+												else
+													first = false;
+
+												current_export.hint_string += c.xml_escape();
+
+												tokenizer->advance();
+												if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
+													break;
+
+												if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
+													current_export = PropertyInfo();
+													_set_error("Expected ')' or ',' in enumeration hint.");
+													return;
+												}
+
+												tokenizer->advance();
+											}
+
+											break;
+										}
+
+									}; //fallthrough to use the same
+									case Variant::REAL: {
+
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "EASE") {
+											current_export.hint = PROPERTY_HINT_EXP_EASING;
+											tokenizer->advance();
+											if (tokenizer->get_token() != GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
+												_set_error("Expected ')' in hint.");
+												return;
+											}
+											break;
+										}
+
+										// range
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "EXP") {
+
+											current_export.hint = PROPERTY_HINT_EXP_RANGE;
+											tokenizer->advance();
+
+											if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
+												break;
+											else if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
+												_set_error("Expected ')' or ',' in exponential range hint.");
+												return;
+											}
+											tokenizer->advance();
+										} else
+											current_export.hint = PROPERTY_HINT_RANGE;
+
+										float sign = 1.0;
+
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_OP_SUB) {
+											sign = -1;
+											tokenizer->advance();
+										}
+										if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || !tokenizer->get_token_constant().is_num()) {
+
+											current_export = PropertyInfo();
+											_set_error("Expected a range in numeric hint.");
+											return;
+										}
+
+										current_export.hint_string = rtos(sign * double(tokenizer->get_token_constant()));
 										tokenizer->advance();
 
 										if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
-											ERR_EXPLAIN("Exporting bit flags hint requires string constants.");
-											WARN_DEPRECATED
+											current_export.hint_string = "0," + current_export.hint_string;
 											break;
 										}
+
 										if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
-											_set_error("Expected ',' in bit flags hint.");
+
+											current_export = PropertyInfo();
+											_set_error("Expected ',' or ')' in numeric range hint.");
 											return;
 										}
 
-										current_export.hint = PROPERTY_HINT_FLAGS;
 										tokenizer->advance();
 
-										bool first = true;
-										while (true) {
-
-											if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || tokenizer->get_token_constant().get_type() != Variant::STRING) {
-												current_export = PropertyInfo();
-												_set_error("Expected a string constant in named bit flags hint.");
-												return;
-											}
-
-											String c = tokenizer->get_token_constant();
-											if (!first)
-												current_export.hint_string += ",";
-											else
-												first = false;
-
-											current_export.hint_string += c.xml_escape();
-
-											tokenizer->advance();
-											if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
-												break;
-
-											if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
-												current_export = PropertyInfo();
-												_set_error("Expected ')' or ',' in named bit flags hint.");
-												return;
-											}
+										sign = 1.0;
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_OP_SUB) {
+											sign = -1;
 											tokenizer->advance();
 										}
 
-										break;
-									}
+										if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || !tokenizer->get_token_constant().is_num()) {
 
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_CONSTANT && tokenizer->get_token_constant().get_type() == Variant::STRING) {
-										//enumeration
-										current_export.hint = PROPERTY_HINT_ENUM;
-										bool first = true;
-										while (true) {
-
-											if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || tokenizer->get_token_constant().get_type() != Variant::STRING) {
-
-												current_export = PropertyInfo();
-												_set_error("Expected a string constant in enumeration hint.");
-												return;
-											}
-
-											String c = tokenizer->get_token_constant();
-											if (!first)
-												current_export.hint_string += ",";
-											else
-												first = false;
-
-											current_export.hint_string += c.xml_escape();
-
-											tokenizer->advance();
-											if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
-												break;
-
-											if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
-												current_export = PropertyInfo();
-												_set_error("Expected ')' or ',' in enumeration hint.");
-												return;
-											}
-
-											tokenizer->advance();
-										}
-
-										break;
-									}
-
-								}; //fallthrough to use the same
-								case Variant::REAL: {
-
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "EASE") {
-										current_export.hint = PROPERTY_HINT_EXP_EASING;
-										tokenizer->advance();
-										if (tokenizer->get_token() != GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
-											_set_error("Expected ')' in hint.");
+											current_export = PropertyInfo();
+											_set_error("Expected a number as upper bound in numeric range hint.");
 											return;
 										}
-										break;
-									}
 
-									// range
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "EXP") {
-
-										current_export.hint = PROPERTY_HINT_EXP_RANGE;
+										current_export.hint_string += "," + rtos(sign * double(tokenizer->get_token_constant()));
 										tokenizer->advance();
 
 										if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
 											break;
-										else if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
-											_set_error("Expected ')' or ',' in exponential range hint.");
+
+										if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
+
+											current_export = PropertyInfo();
+											_set_error("Expected ',' or ')' in numeric range hint.");
 											return;
 										}
+
 										tokenizer->advance();
-									} else
-										current_export.hint = PROPERTY_HINT_RANGE;
-
-									float sign = 1.0;
-
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_OP_SUB) {
-										sign = -1;
-										tokenizer->advance();
-									}
-									if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || !tokenizer->get_token_constant().is_num()) {
-
-										current_export = PropertyInfo();
-										_set_error("Expected a range in numeric hint.");
-										return;
-									}
-
-									current_export.hint_string = rtos(sign * double(tokenizer->get_token_constant()));
-									tokenizer->advance();
-
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
-										current_export.hint_string = "0," + current_export.hint_string;
-										break;
-									}
-
-									if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
-
-										current_export = PropertyInfo();
-										_set_error("Expected ',' or ')' in numeric range hint.");
-										return;
-									}
-
-									tokenizer->advance();
-
-									sign = 1.0;
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_OP_SUB) {
-										sign = -1;
-										tokenizer->advance();
-									}
-
-									if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || !tokenizer->get_token_constant().is_num()) {
-
-										current_export = PropertyInfo();
-										_set_error("Expected a number as upper bound in numeric range hint.");
-										return;
-									}
-
-									current_export.hint_string += "," + rtos(sign * double(tokenizer->get_token_constant()));
-									tokenizer->advance();
-
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
-										break;
-
-									if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
-
-										current_export = PropertyInfo();
-										_set_error("Expected ',' or ')' in numeric range hint.");
-										return;
-									}
-
-									tokenizer->advance();
-									sign = 1.0;
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_OP_SUB) {
-										sign = -1;
-										tokenizer->advance();
-									}
-
-									if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || !tokenizer->get_token_constant().is_num()) {
-
-										current_export = PropertyInfo();
-										_set_error("Expected a number as step in numeric range hint.");
-										return;
-									}
-
-									current_export.hint_string += "," + rtos(sign * double(tokenizer->get_token_constant()));
-									tokenizer->advance();
-
-								} break;
-								case Variant::STRING: {
-
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_CONSTANT && tokenizer->get_token_constant().get_type() == Variant::STRING) {
-										//enumeration
-										current_export.hint = PROPERTY_HINT_ENUM;
-										bool first = true;
-										while (true) {
-
-											if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || tokenizer->get_token_constant().get_type() != Variant::STRING) {
-
-												current_export = PropertyInfo();
-												_set_error("Expected a string constant in enumeration hint.");
-												return;
-											}
-
-											String c = tokenizer->get_token_constant();
-											if (!first)
-												current_export.hint_string += ",";
-											else
-												first = false;
-
-											current_export.hint_string += c.xml_escape();
-											tokenizer->advance();
-											if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
-												break;
-
-											if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
-												current_export = PropertyInfo();
-												_set_error("Expected ')' or ',' in enumeration hint.");
-												return;
-											}
+										sign = 1.0;
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_OP_SUB) {
+											sign = -1;
 											tokenizer->advance();
 										}
 
-										break;
-									}
+										if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || !tokenizer->get_token_constant().is_num()) {
 
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "DIR") {
+											current_export = PropertyInfo();
+											_set_error("Expected a number as step in numeric range hint.");
+											return;
+										}
 
+										current_export.hint_string += "," + rtos(sign * double(tokenizer->get_token_constant()));
 										tokenizer->advance();
 
-										if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
-											current_export.hint = PROPERTY_HINT_DIR;
-										else if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA) {
+									} break;
+									case Variant::STRING: {
+
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_CONSTANT && tokenizer->get_token_constant().get_type() == Variant::STRING) {
+											//enumeration
+											current_export.hint = PROPERTY_HINT_ENUM;
+											bool first = true;
+											while (true) {
+
+												if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || tokenizer->get_token_constant().get_type() != Variant::STRING) {
+
+													current_export = PropertyInfo();
+													_set_error("Expected a string constant in enumeration hint.");
+													return;
+												}
+
+												String c = tokenizer->get_token_constant();
+												if (!first)
+													current_export.hint_string += ",";
+												else
+													first = false;
+
+												current_export.hint_string += c.xml_escape();
+												tokenizer->advance();
+												if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
+													break;
+
+												if (tokenizer->get_token() != GDScriptTokenizer::TK_COMMA) {
+													current_export = PropertyInfo();
+													_set_error("Expected ')' or ',' in enumeration hint.");
+													return;
+												}
+												tokenizer->advance();
+											}
+
+											break;
+										}
+
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "DIR") {
 
 											tokenizer->advance();
 
-											if (tokenizer->get_token() != GDScriptTokenizer::TK_IDENTIFIER || !(tokenizer->get_token_identifier() == "GLOBAL")) {
-												_set_error("Expected 'GLOBAL' after comma in directory hint.");
+											if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
+												current_export.hint = PROPERTY_HINT_DIR;
+											else if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA) {
+
+												tokenizer->advance();
+
+												if (tokenizer->get_token() != GDScriptTokenizer::TK_IDENTIFIER || !(tokenizer->get_token_identifier() == "GLOBAL")) {
+													_set_error("Expected 'GLOBAL' after comma in directory hint.");
+													return;
+												}
+												if (!p_class->tool) {
+													_set_error("Global filesystem hints may only be used in tool scripts.");
+													return;
+												}
+												current_export.hint = PROPERTY_HINT_GLOBAL_DIR;
+												tokenizer->advance();
+
+												if (tokenizer->get_token() != GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
+													_set_error("Expected ')' in hint.");
+													return;
+												}
+											} else {
+												_set_error("Expected ')' or ',' in hint.");
 												return;
 											}
-											if (!p_class->tool) {
-												_set_error("Global filesystem hints may only be used in tool scripts.");
-												return;
-											}
-											current_export.hint = PROPERTY_HINT_GLOBAL_DIR;
+											break;
+										}
+
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "FILE") {
+
+											current_export.hint = PROPERTY_HINT_FILE;
 											tokenizer->advance();
+
+											if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA) {
+
+												tokenizer->advance();
+
+												if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "GLOBAL") {
+
+													if (!p_class->tool) {
+														_set_error("Global filesystem hints may only be used in tool scripts.");
+														return;
+													}
+													current_export.hint = PROPERTY_HINT_GLOBAL_FILE;
+													tokenizer->advance();
+
+													if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
+														break;
+													else if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA)
+														tokenizer->advance();
+													else {
+														_set_error("Expected ')' or ',' in hint.");
+														return;
+													}
+												}
+
+												if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || tokenizer->get_token_constant().get_type() != Variant::STRING) {
+
+													if (current_export.hint == PROPERTY_HINT_GLOBAL_FILE)
+														_set_error("Expected string constant with filter");
+													else
+														_set_error("Expected 'GLOBAL' or string constant with filter");
+													return;
+												}
+												current_export.hint_string = tokenizer->get_token_constant();
+												tokenizer->advance();
+											}
 
 											if (tokenizer->get_token() != GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
 												_set_error("Expected ')' in hint.");
 												return;
 											}
-										} else {
-											_set_error("Expected ')' or ',' in hint.");
-											return;
+											break;
 										}
-										break;
-									}
 
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "FILE") {
+										if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "MULTILINE") {
 
-										current_export.hint = PROPERTY_HINT_FILE;
-										tokenizer->advance();
-
-										if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA) {
-
+											current_export.hint = PROPERTY_HINT_MULTILINE_TEXT;
 											tokenizer->advance();
-
-											if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "GLOBAL") {
-
-												if (!p_class->tool) {
-													_set_error("Global filesystem hints may only be used in tool scripts.");
-													return;
-												}
-												current_export.hint = PROPERTY_HINT_GLOBAL_FILE;
-												tokenizer->advance();
-
-												if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_CLOSE)
-													break;
-												else if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA)
-													tokenizer->advance();
-												else {
-													_set_error("Expected ')' or ',' in hint.");
-													return;
-												}
-											}
-
-											if (tokenizer->get_token() != GDScriptTokenizer::TK_CONSTANT || tokenizer->get_token_constant().get_type() != Variant::STRING) {
-
-												if (current_export.hint == PROPERTY_HINT_GLOBAL_FILE)
-													_set_error("Expected string constant with filter");
-												else
-													_set_error("Expected 'GLOBAL' or string constant with filter");
+											if (tokenizer->get_token() != GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
+												_set_error("Expected ')' in hint.");
 												return;
 											}
-											current_export.hint_string = tokenizer->get_token_constant();
-											tokenizer->advance();
+											break;
 										}
+									} break;
+									case Variant::COLOR: {
 
-										if (tokenizer->get_token() != GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
-											_set_error("Expected ')' in hint.");
+										if (tokenizer->get_token() != GDScriptTokenizer::TK_IDENTIFIER) {
+
+											current_export = PropertyInfo();
+											_set_error("Color type hint expects RGB or RGBA as hints");
 											return;
 										}
-										break;
-									}
 
-									if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "MULTILINE") {
-
-										current_export.hint = PROPERTY_HINT_MULTILINE_TEXT;
+										String identifier = tokenizer->get_token_identifier();
+										if (identifier == "RGB") {
+											current_export.hint = PROPERTY_HINT_COLOR_NO_ALPHA;
+										} else if (identifier == "RGBA") {
+											//none
+										} else {
+											current_export = PropertyInfo();
+											_set_error("Color type hint expects RGB or RGBA as hints");
+											return;
+										}
 										tokenizer->advance();
-										if (tokenizer->get_token() != GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
-											_set_error("Expected ')' in hint.");
-											return;
-										}
-										break;
-									}
-								} break;
-								case Variant::COLOR: {
 
-									if (tokenizer->get_token() != GDScriptTokenizer::TK_IDENTIFIER) {
-
+									} break;
+									default: {
 										current_export = PropertyInfo();
-										_set_error("Color type hint expects RGB or RGBA as hints");
+										_set_error("Type '" + Variant::get_type_name(type) + "' can't take hints.");
 										return;
-									}
-
-									String identifier = tokenizer->get_token_identifier();
-									if (identifier == "RGB") {
-										current_export.hint = PROPERTY_HINT_COLOR_NO_ALPHA;
-									} else if (identifier == "RGBA") {
-										//none
-									} else {
-										current_export = PropertyInfo();
-										_set_error("Color type hint expects RGB or RGBA as hints");
-										return;
-									}
-									tokenizer->advance();
-
-								} break;
-								default: {
-									current_export = PropertyInfo();
-									_set_error("Type '" + Variant::get_type_name(type) + "' can't take hints.");
-									return;
-								} break;
+									} break;
+								}
 							}
-						}
 
-					} else {
+						} else { // 'Custom' hint types such as Resource or PackedScene
 
-						parenthesis++;
-						Node *subexpr = _parse_and_reduce_expression(p_class, true, true);
-						if (!subexpr) {
-							if (_recover_from_completion()) {
-								break;
+							parenthesis++;
+							Node *subexpr = _parse_and_reduce_expression(p_class, true, true);
+							if (!subexpr) {
+								if (_recover_from_completion()) {
+									break;
+								}
+								return;
 							}
-							return;
-						}
-						parenthesis--;
+							parenthesis--;
 
-						if (subexpr->type != Node::TYPE_CONSTANT) {
-							current_export = PropertyInfo();
-							_set_error("Expected a constant expression.");
-						}
-
-						Variant constant = static_cast<ConstantNode *>(subexpr)->value;
-
-						if (constant.get_type() == Variant::OBJECT) {
-							GDScriptNativeClass *native_class = Object::cast_to<GDScriptNativeClass>(constant);
-
-							if (native_class && ClassDB::is_parent_class(native_class->get_name(), "Resource")) {
-								current_export.type = Variant::OBJECT;
-								current_export.hint = PROPERTY_HINT_RESOURCE_TYPE;
-								current_export.usage |= PROPERTY_USAGE_SCRIPT_VARIABLE;
-
-								// types such as 'PackedScene' are handled here
-								current_export.hint_string = native_class->get_name();
-								current_export.class_name = native_class->get_name();
-
-							} else {
+							if (subexpr->type != Node::TYPE_CONSTANT) {
 								current_export = PropertyInfo();
-								_set_error("Export hint not a resource type.");
+								_set_error("Expected a constant expression.");
 							}
-						} else if (constant.get_type() == Variant::DICTIONARY) {
-							// Enumeration
-							bool is_flags = false;
 
-							if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA) {
-								tokenizer->advance();
+							Variant constant = static_cast<ConstantNode *>(subexpr)->value;
 
-								if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "FLAGS") {
-									is_flags = true;
-									tokenizer->advance();
+							// Resource hints handling
+							if (constant.get_type() == Variant::OBJECT) {
+								GDScriptNativeClass *native_class = Object::cast_to<GDScriptNativeClass>(constant);
+
+								if (native_class && ClassDB::is_parent_class(native_class->get_name(), "Resource")) {
+									current_export.type = Variant::OBJECT;
+									current_export.hint = PROPERTY_HINT_RESOURCE_TYPE;
+									current_export.usage |= PROPERTY_USAGE_SCRIPT_VARIABLE;
+
+									// types such as 'PackedScene' are handled here
+									current_export.hint_string = native_class->get_name();
+									current_export.class_name = native_class->get_name();
+
 								} else {
 									current_export = PropertyInfo();
-									_set_error("Expected 'FLAGS' after comma.");
+									_set_error("Export hint not a resource type.");
 								}
-							}
+							} else if (constant.get_type() == Variant::DICTIONARY) { // Enumeration hints handling?
+								// Enumeration
+								bool is_flags = false;
 
-							current_export.type = Variant::INT;
-							current_export.hint = is_flags ? PROPERTY_HINT_FLAGS : PROPERTY_HINT_ENUM;
-							current_export.usage |= PROPERTY_USAGE_SCRIPT_VARIABLE;
-							Dictionary enum_values = constant;
+								if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA) {
+									tokenizer->advance();
 
-							List<Variant> keys;
-							enum_values.get_key_list(&keys);
-
-							bool first = true;
-							for (List<Variant>::Element *E = keys.front(); E; E = E->next()) {
-								if (enum_values[E->get()].get_type() == Variant::INT) {
-									if (!first)
-										current_export.hint_string += ",";
-									else
-										first = false;
-
-									current_export.hint_string += E->get().operator String().camelcase_to_underscore(true).capitalize().xml_escape();
-									if (!is_flags) {
-										current_export.hint_string += ":";
-										current_export.hint_string += enum_values[E->get()].operator String().xml_escape();
+									if (tokenizer->get_token() == GDScriptTokenizer::TK_IDENTIFIER && tokenizer->get_token_identifier() == "FLAGS") {
+										is_flags = true;
+										tokenizer->advance();
+									} else {
+										current_export = PropertyInfo();
+										_set_error("Expected 'FLAGS' after comma.");
 									}
 								}
+
+								current_export.type = Variant::INT;
+								current_export.hint = is_flags ? PROPERTY_HINT_FLAGS : PROPERTY_HINT_ENUM;
+								current_export.usage |= PROPERTY_USAGE_SCRIPT_VARIABLE;
+								Dictionary enum_values = constant;
+
+								List<Variant> keys;
+								enum_values.get_key_list(&keys);
+
+								bool first = true;
+								for (List<Variant>::Element *E = keys.front(); E; E = E->next()) {
+									if (enum_values[E->get()].get_type() == Variant::INT) {
+										if (!first)
+											current_export.hint_string += ",";
+										else
+											first = false;
+
+										current_export.hint_string += E->get().operator String().camelcase_to_underscore(true).capitalize().xml_escape();
+										if (!is_flags) {
+											current_export.hint_string += ":";
+											current_export.hint_string += enum_values[E->get()].operator String().xml_escape();
+										}
+									}
+								}
+							} else {
+								current_export = PropertyInfo();
+								_set_error("Expected type for export.");
+								return;
 							}
-						} else {
-							current_export = PropertyInfo();
-							_set_error("Expected type for export.");
-							return;
 						}
 					}
-
 					// The end of export type specification
 					if (tokenizer->get_token() != GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
 						current_export = PropertyInfo();
@@ -4435,10 +4439,10 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 					}
 
 					// Process Array with type hints
-					if (is_arrayed) {
+					if (is_hinted_array) {
 						// If there are no nested Arrays, hint_prefix appears to be empty.
-						// For a nested Array, the current_export.type holds the type of the last hint 
-						hint_prefix += itos(current_export.type); 
+						// For a nested Array, the current_export.type holds the type of the last hint
+						hint_prefix += itos(current_export.type);
 						if (current_export.hint) {
 							hint_prefix += "/" + itos(current_export.hint); // current_export.hint holds the enum value corresponding to the hinted type
 						}
@@ -4449,31 +4453,20 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 						current_export.type = Variant::ARRAY;
 					}
 
-					// Process Dictionary with type hints
-					if(is_dictionary) {
-						hint_prefix += itos(current_export.type);
-						if (current_export.hint) {
-							hint_prefix += "/" + itos(current_export.hint);
-						}
-						current_export.hint_string = hint_prefix + ":" + current_export.hint_string;
-						current_export.hint = PROPERTY_HINT_TYPE_STRING;
-						current_export.type = Variant::DICTIONARY;
-					}
-
 					tokenizer->advance();
 				}
 
 				// handle the proper keyword after the 'export' declaration (most typically, the 'var' keyword)
 				if (tokenizer->get_token() != GDScriptTokenizer::TK_PR_VAR &&
-					tokenizer->get_token() != GDScriptTokenizer::TK_PR_ONREADY &&
-					tokenizer->get_token() != GDScriptTokenizer::TK_PR_REMOTE &&
-					tokenizer->get_token() != GDScriptTokenizer::TK_PR_MASTER &&
-					tokenizer->get_token() != GDScriptTokenizer::TK_PR_PUPPET &&
-					tokenizer->get_token() != GDScriptTokenizer::TK_PR_SYNC &&
-					tokenizer->get_token() != GDScriptTokenizer::TK_PR_REMOTESYNC &&
-					tokenizer->get_token() != GDScriptTokenizer::TK_PR_MASTERSYNC &&
-					tokenizer->get_token() != GDScriptTokenizer::TK_PR_PUPPETSYNC &&
-					tokenizer->get_token() != GDScriptTokenizer::TK_PR_SLAVE) {
+						tokenizer->get_token() != GDScriptTokenizer::TK_PR_ONREADY &&
+						tokenizer->get_token() != GDScriptTokenizer::TK_PR_REMOTE &&
+						tokenizer->get_token() != GDScriptTokenizer::TK_PR_MASTER &&
+						tokenizer->get_token() != GDScriptTokenizer::TK_PR_PUPPET &&
+						tokenizer->get_token() != GDScriptTokenizer::TK_PR_SYNC &&
+						tokenizer->get_token() != GDScriptTokenizer::TK_PR_REMOTESYNC &&
+						tokenizer->get_token() != GDScriptTokenizer::TK_PR_MASTERSYNC &&
+						tokenizer->get_token() != GDScriptTokenizer::TK_PR_PUPPETSYNC &&
+						tokenizer->get_token() != GDScriptTokenizer::TK_PR_SLAVE) {
 
 					current_export = PropertyInfo();
 					_set_error("Expected 'var', 'onready', 'remote', 'master', 'puppet', 'sync', 'remotesync', 'mastersync', 'puppetsync'.");
