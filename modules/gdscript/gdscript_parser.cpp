@@ -3933,29 +3933,33 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 			} break;
 			case GDScriptTokenizer::TK_PR_EXPORT: {
 
-				tokenizer->advance();
+				tokenizer->advance(); // go past 'export' keyword
 
+				// handle the case when the user specifies what type of variable is being exported
 				if (tokenizer->get_token() == GDScriptTokenizer::TK_PARENTHESIS_OPEN) {
 
-					tokenizer->advance();
+					tokenizer->advance(); // go past '(' symbol
 
-					String hint_prefix = "";
-					bool is_arrayed = false;
-					bool is_dictionary = false;
+					String hint_prefix = ""; // this is used to form the scene editor export helper string
+					bool is_arrayed = false; // parsing exported Array with hints
+					bool is_dictionary = false; // parsing exported Dictionary with hints
 
+					// This will run until the construct 'Array, ' is there: export(Array, Array, Array, ... )
+					// Seems to handle the nested Arrays case
 					while (tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE &&
 							tokenizer->get_token_type() == Variant::ARRAY &&
 							tokenizer->get_token(1) == GDScriptTokenizer::TK_COMMA) {
-						tokenizer->advance(); // Array
-						tokenizer->advance(); // Comma
+						tokenizer->advance(); // Go past 'Array' identifier
+						tokenizer->advance(); // Go past ',' symbol
 						if (is_arrayed) {
-							hint_prefix += itos(Variant::ARRAY) + ":";
+							hint_prefix += itos(Variant::ARRAY) + ":"; // 19: (i.e. Array of: Array of: int)
 						} else {
-							is_arrayed = true;
+							is_arrayed = true; // toggled in case of 'export(Array, HINT...)' construction
 						}
 					}
 
-					while(tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE &&
+					// Handling export of a dictionary with hints
+					/*while(tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE &&
 						  tokenizer->get_token_type() == Variant::DICTIONARY &&
 						  tokenizer->get_token(1) == GDScriptTokenizer::TK_COMMA) {
 
@@ -3968,11 +3972,14 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 						} else {
 							is_dictionary = true;
 						}
-					}
+					}*/
 
+					// General export type specification & special cases for Array or Dictionary hints.
+					// On this stage, the tokenizer will be either past the first hint comma or past the '(' symbol.
+					// In any case, current position should hold some type name.
 					if (tokenizer->get_token() == GDScriptTokenizer::TK_BUILT_IN_TYPE) {
 
-						Variant::Type type = tokenizer->get_token_type();
+						Variant::Type type = tokenizer->get_token_type(); // The type of exported variable. For Arrays and Dictionaries with hints this is overriden below
 						if (type == Variant::NIL) {
 							_set_error("Can't export null type.");
 							return;
@@ -3981,13 +3988,13 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 							_set_error("Can't export raw object type.");
 							return;
 						}
-						current_export.type = type;
+						current_export.type = type; // The pure hint type ( without Array or Dictionary involved
 						current_export.usage |= PROPERTY_USAGE_SCRIPT_VARIABLE;
-						tokenizer->advance();
+						tokenizer->advance(); // go past type name, typically this will be a ')' symbol.
 
+						// Export hints are processed here - after getting a ',' symbol after the type name
 						if (tokenizer->get_token() == GDScriptTokenizer::TK_COMMA) {
-							// hint expected next!
-							tokenizer->advance();
+							tokenizer->advance(); // next token after comma
 
 							switch (type) {
 
@@ -4332,7 +4339,6 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 
 								} break;
 								default: {
-
 									current_export = PropertyInfo();
 									_set_error("Type '" + Variant::get_type_name(type) + "' can't take hints.");
 									return;
@@ -4367,6 +4373,7 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 								current_export.hint = PROPERTY_HINT_RESOURCE_TYPE;
 								current_export.usage |= PROPERTY_USAGE_SCRIPT_VARIABLE;
 
+								// types such as 'PackedScene' are handled here
 								current_export.hint_string = native_class->get_name();
 								current_export.class_name = native_class->get_name();
 
@@ -4420,23 +4427,29 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 						}
 					}
 
+					// The end of export type specification
 					if (tokenizer->get_token() != GDScriptTokenizer::TK_PARENTHESIS_CLOSE) {
-
 						current_export = PropertyInfo();
 						_set_error("Expected ')' or ',' after export hint.");
 						return;
 					}
 
+					// Process Array with type hints
 					if (is_arrayed) {
-						hint_prefix += itos(current_export.type);
+						// If there are no nested Arrays, hint_prefix appears to be empty.
+						// For a nested Array, the current_export.type holds the type of the last hint 
+						hint_prefix += itos(current_export.type); 
 						if (current_export.hint) {
-							hint_prefix += "/" + itos(current_export.hint);
+							hint_prefix += "/" + itos(current_export.hint); // current_export.hint holds the enum value corresponding to the hinted type
 						}
-						current_export.hint_string = hint_prefix + ":" + current_export.hint_string;
+
+						// current_export.hint_string holds the name of the (last?) hinted type
+						current_export.hint_string = hint_prefix + ":" + current_export.hint_string; // what we got here is a record in form of Number/Number:TypeName
 						current_export.hint = PROPERTY_HINT_TYPE_STRING;
 						current_export.type = Variant::ARRAY;
 					}
 
+					// Process Dictionary with type hints
 					if(is_dictionary) {
 						hint_prefix += itos(current_export.type);
 						if (current_export.hint) {
@@ -4450,7 +4463,17 @@ void GDScriptParser::_parse_class(ClassNode *p_class) {
 					tokenizer->advance();
 				}
 
-				if (tokenizer->get_token() != GDScriptTokenizer::TK_PR_VAR && tokenizer->get_token() != GDScriptTokenizer::TK_PR_ONREADY && tokenizer->get_token() != GDScriptTokenizer::TK_PR_REMOTE && tokenizer->get_token() != GDScriptTokenizer::TK_PR_MASTER && tokenizer->get_token() != GDScriptTokenizer::TK_PR_PUPPET && tokenizer->get_token() != GDScriptTokenizer::TK_PR_SYNC && tokenizer->get_token() != GDScriptTokenizer::TK_PR_REMOTESYNC && tokenizer->get_token() != GDScriptTokenizer::TK_PR_MASTERSYNC && tokenizer->get_token() != GDScriptTokenizer::TK_PR_PUPPETSYNC && tokenizer->get_token() != GDScriptTokenizer::TK_PR_SLAVE) {
+				// handle the proper keyword after the 'export' declaration (most typically, the 'var' keyword)
+				if (tokenizer->get_token() != GDScriptTokenizer::TK_PR_VAR &&
+					tokenizer->get_token() != GDScriptTokenizer::TK_PR_ONREADY &&
+					tokenizer->get_token() != GDScriptTokenizer::TK_PR_REMOTE &&
+					tokenizer->get_token() != GDScriptTokenizer::TK_PR_MASTER &&
+					tokenizer->get_token() != GDScriptTokenizer::TK_PR_PUPPET &&
+					tokenizer->get_token() != GDScriptTokenizer::TK_PR_SYNC &&
+					tokenizer->get_token() != GDScriptTokenizer::TK_PR_REMOTESYNC &&
+					tokenizer->get_token() != GDScriptTokenizer::TK_PR_MASTERSYNC &&
+					tokenizer->get_token() != GDScriptTokenizer::TK_PR_PUPPETSYNC &&
+					tokenizer->get_token() != GDScriptTokenizer::TK_PR_SLAVE) {
 
 					current_export = PropertyInfo();
 					_set_error("Expected 'var', 'onready', 'remote', 'master', 'puppet', 'sync', 'remotesync', 'mastersync', 'puppetsync'.");
